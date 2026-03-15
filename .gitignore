@@ -1,0 +1,10 @@
+.venv/
+venv/
+.idea/
+__pycache__/
+.env
+*.pyc
+desktop.ini
+out_media/
+in_media/
+saidas_com_logo/
