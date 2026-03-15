@@ -8,7 +8,7 @@ import numpy as np
 from flask import Flask, request, send_from_directory, url_for
 from PIL import Image
 
-# moviepy (vÃ­deo)
+# moviepy (vÃƒÂ­deo)
 from moviepy.editor import VideoFileClip, ImageClip, CompositeVideoClip
 from moviepy.video.VideoClip import VideoClip as MPVideoClip
 
@@ -16,11 +16,7 @@ from moviepy.video.VideoClip import VideoClip as MPVideoClip
 # CONFIG
 # =========================
 
-<<<<<<< HEAD
-ACCOUNT_SID = os.getenv("ACCOUNT_SID")
-AUTH_TOKEN = os.getenv("AUTH_TOKEN")
-VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "")
-=======
+
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "")
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v23.0")
 WHATSAPP_TOKEN = (
@@ -34,9 +30,8 @@ WHATSAPP_PHONE_NUMBER_ID = (
     or os.getenv("PHONE_NUMBER_ID")
     or ""
 )
->>>>>>> 62d829b (mudança do codigo)
 
-# Pasta onde vamos salvar mÃ­dias recebidas e processadas
+# Pasta onde vamos salvar mÃƒÂ­dias recebidas e processadas
 BASE_DIR = Path(__file__).parent
 IN_DIR = BASE_DIR / "in_media"
 OUT_DIR = BASE_DIR / "out_media"
@@ -46,33 +41,27 @@ OUT_DIR.mkdir(exist_ok=True)
 # Logo fixa (certifique-se que o arquivo logo.png existe nesta pasta)
 LOGO_PATH = BASE_DIR / "logo.png"
 
-<<<<<<< HEAD
-# SEU DOMÍNIO DO NGROK (Atualizado conforme seu print)
-# IMPORTANTE: Se você reiniciar o ngrok, essa URL muda e você precisa atualizar aqui.
-=======
-# SEU DOMÃNIO DO NGROK (Atualizado conforme seu print)
-# IMPORTANTE: Se vocÃª reiniciar o ngrok, essa URL muda e vocÃª precisa atualizar aqui.
->>>>>>> 62d829b (mudança do codigo)
+# Base publica para servir a midia processada.
 _railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN")
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL") or (
     f"https://{_railway_domain}" if _railway_domain else ""
 )
 
-# Ajustes padrÃ£o da logo
+# Ajustes padrÃƒÂ£o da logo
 DEFAULT_POSITION = "Canto superior esquerdo"
 
-# --- AQUI ESTÃ O CONTROLE DO TAMANHO ---
+# --- AQUI ESTÃƒÂ O CONTROLE DO TAMANHO ---
 # Estava 18. Tente 35 ou 40 para ficar bem maior.
-# Esse nÃºmero representa a porcentagem da largura da imagem total que a logo vai ocupar.
+# Esse nÃƒÂºmero representa a porcentagem da largura da imagem total que a logo vai ocupar.
 DEFAULT_SIZE_PCT = 35
 
-DEFAULT_MARGIN_PCT = 3  # Margem (distÃ¢ncia da borda)
+DEFAULT_MARGIN_PCT = 3  # Margem (distÃƒÂ¢ncia da borda)
 
 app = Flask(__name__)
 
 
 # =========================
-# HELPERS (CÃ¡lculo de tamanho e posiÃ§Ã£o)
+# HELPERS (CÃƒÂ¡lculo de tamanho e posiÃƒÂ§ÃƒÂ£o)
 # =========================
 def compute_logo_size(
         base_size: Tuple[int, int],
@@ -252,14 +241,14 @@ def apply_logo_to_video(video_path: Path, logo_path: Path,
         rgb = np.array(logo_r.convert("RGB"))
         alpha = np.array(logo_r.split()[3], dtype=float) / 255.0
 
-        # CORREÃ‡ÃƒO AQUI: ismask (sem underline)
+        # CORREÃƒâ€¡ÃƒÆ’O AQUI: ismask (sem underline)
         logo_clip = ImageClip(rgb, ismask=False, duration=duration)
         logo_clip = logo_clip.set_position(pos).set_start(0)
 
         def mask_frame(t, base_alpha=alpha):
             return base_alpha
 
-        # CORREÃ‡ÃƒO AQUI: ismask (sem underline)
+        # CORREÃƒâ€¡ÃƒÆ’O AQUI: ismask (sem underline)
         mask_clip = MPVideoClip(mask_frame, ismask=True, duration=duration)
         mask_clip = mask_clip.set_position(pos).set_start(0)
         mask_clip.size = (new_w, new_h)
@@ -291,7 +280,7 @@ def apply_logo_to_video(video_path: Path, logo_path: Path,
 # =========================
 @app.route("/media/<path:filename>")
 def media(filename):
-    # Usando send_from_directory que jÃ¡ estÃ¡ importado e Ã© seguro
+    # Usando send_from_directory que jÃƒÂ¡ estÃƒÂ¡ importado e ÃƒÂ© seguro
     return send_from_directory(OUT_DIR, filename)
 
 
@@ -308,24 +297,6 @@ def verify():
     mode = request.args.get("hub.mode")
     token = request.args.get("hub.verify_token")
     challenge = request.args.get("hub.challenge")
-<<<<<<< HEAD
-
-    if mode == "subscribe" and VERIFY_TOKEN and token == VERIFY_TOKEN:
-        return challenge or "", 200
-    return "error", 403
-
-
-@app.post("/webhook")
-def whatsapp_cloud_events():
-    return "EVENT_RECEIVED", 200
-
-
-@app.post("/whatsapp")
-def whatsapp_webhook():
-    resp = MessagingResponse()
-    msg = resp.message()
-=======
->>>>>>> 62d829b (mudança do codigo)
 
     if mode == "subscribe" and VERIFY_TOKEN and token == VERIFY_TOKEN:
         return challenge or "", 200
