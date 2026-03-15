@@ -4,7 +4,7 @@ import re
 import uuid
 import unicodedata
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, List, Tuple
 
 import requests
 import numpy as np
@@ -74,6 +74,16 @@ ALLOWED_POSITIONS = {
     "canto inferior direito": "Canto inferior direito",
 }
 
+POSITION_ROWS = [
+    ("pos_top_left", "Canto superior esquerdo"),
+    ("pos_top_center", "Centro superior"),
+    ("pos_top_right", "Canto superior direito"),
+    ("pos_center", "Centro"),
+    ("pos_bottom_left", "Canto inferior esquerdo"),
+    ("pos_bottom_center", "Centro inferior"),
+    ("pos_bottom_right", "Canto inferior direito"),
+]
+
 app = Flask(__name__)
 SETTINGS_PATH = BASE_DIR / "user_presets.json"
 USER_SETTINGS: Dict[str, Dict[str, object]] = {}
@@ -97,23 +107,32 @@ def _normalize_text(value: str) -> str:
 
 def _normalize_position(value: str) -> str:
     normalized = _normalize_text(value)
+    if not normalized:
+        return ""
+
+    # Tolerancia para erro comum de digitacao.
+    normalized = normalized.replace("cantao", "canto")
 
     if normalized in ALLOWED_POSITIONS:
         return ALLOWED_POSITIONS[normalized]
 
-    if "superior" in normalized and "esquerda" in normalized:
+    has_left = ("esquerdo" in normalized) or ("esquerda" in normalized)
+    has_right = ("direito" in normalized) or ("direita" in normalized)
+    has_center = ("centro" in normalized) or ("meio" in normalized)
+
+    if "superior" in normalized and has_left:
         return "Canto superior esquerdo"
-    if "superior" in normalized and "direita" in normalized:
+    if "superior" in normalized and has_right:
         return "Canto superior direito"
-    if "superior" in normalized and "centro" in normalized:
+    if "superior" in normalized and has_center:
         return "Centro superior"
-    if "inferior" in normalized and "esquerda" in normalized:
+    if "inferior" in normalized and has_left:
         return "Canto inferior esquerdo"
-    if "inferior" in normalized and "direita" in normalized:
+    if "inferior" in normalized and has_right:
         return "Canto inferior direito"
-    if "inferior" in normalized and "centro" in normalized:
+    if "inferior" in normalized and has_center:
         return "Centro inferior"
-    if normalized in {"centro", "meio"}:
+    if has_center:
         return "Centro"
     return ""
 
@@ -189,20 +208,193 @@ def set_user_settings(phone: str, settings: Dict[str, object]) -> Dict[str, obje
 
 
 def format_status_message(settings: Dict[str, object]) -> str:
-    positions = ", ".join(ALLOWED_POSITIONS.values())
+    positions = "\n".join(f"- {name}" for _, name in POSITION_ROWS)
     return (
         "Status atual:\n"
         f"- Margem: {settings['margin_pct']}%\n"
         f"- Tamanho da logo: {settings['size_pct']}%\n"
         f"- Posicao: {settings['position']}\n\n"
-        "Comandos:\n"
-        f"- margem <{MIN_MARGIN_PCT}-{MAX_MARGIN_PCT}>\n"
-        f"- tamanho <{MIN_SIZE_PCT}-{MAX_SIZE_PCT}>\n"
-        "- posicao <nome>\n"
+        "Comandos (pode mandar tudo junto na mesma mensagem):\n"
+        f"- margem N ({MIN_MARGIN_PCT} a {MAX_MARGIN_PCT})\n"
+        f"- tamanho N ({MIN_SIZE_PCT} a {MAX_SIZE_PCT})\n"
+        "- posicao nome\n"
         "- status\n"
+        "- menu\n"
         "- reset\n\n"
-        f"Posicoes aceitas: {positions}"
+        "Modelo copiar/colar (troque os valores e envie):\n"
+        "margem 3\n"
+        "tamanho 40\n"
+        "canto superior esquerdo\n\n"
+        "Modelo em 1 linha:\n"
+        "margem 3 tamanho 40 canto superior esquerdo\n\n"
+        "Posicoes aceitas:\n"
+        f"{positions}"
     )
+
+
+def send_whatsapp_interactive_buttons(to_number: str, body: str, buttons: List[Tuple[str, str]]) -> bool:
+    if not WHATSAPP_TOKEN or not WHATSAPP_PHONE_NUMBER_ID:
+        print("Config ausente: WHATSAPP_TOKEN ou WHATSAPP_PHONE_NUMBER_ID.")
+        return False
+
+    if not buttons or len(buttons) > 3:
+        return False
+
+    action_buttons = []
+    for button_id, title in buttons:
+        action_buttons.append(
+            {
+                "type": "reply",
+                "reply": {
+                    "id": button_id[:256],
+                    "title": title[:20],
+                },
+            }
+        )
+
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to_number,
+        "type": "interactive",
+        "interactive": {
+            "type": "button",
+            "body": {"text": body[:1024]},
+            "action": {"buttons": action_buttons},
+        },
+    }
+
+    url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{WHATSAPP_PHONE_NUMBER_ID}/messages"
+    try:
+        resp = requests.post(
+            url,
+            headers={**meta_headers(), "Content-Type": "application/json"},
+            json=payload,
+            timeout=30,
+        )
+    except requests.exceptions.RequestException as e:
+        print(f"Erro de rede ao enviar botoes: {e}")
+        return False
+
+    if not resp.ok:
+        print(f"Erro ao enviar botoes: {resp.status_code} - {resp.text}")
+    return resp.ok
+
+
+def send_whatsapp_interactive_list(
+    to_number: str,
+    body: str,
+    button_text: str,
+    rows: List[Tuple[str, str]],
+) -> bool:
+    if not WHATSAPP_TOKEN or not WHATSAPP_PHONE_NUMBER_ID:
+        print("Config ausente: WHATSAPP_TOKEN ou WHATSAPP_PHONE_NUMBER_ID.")
+        return False
+
+    if not rows:
+        return False
+
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to_number,
+        "type": "interactive",
+        "interactive": {
+            "type": "list",
+            "body": {"text": body[:1024]},
+            "action": {
+                "button": button_text[:20],
+                "sections": [
+                    {
+                        "title": "Posicoes",
+                        "rows": [
+                            {
+                                "id": row_id[:200],
+                                "title": title[:24],
+                            }
+                            for row_id, title in rows
+                        ],
+                    }
+                ],
+            },
+        },
+    }
+
+    url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{WHATSAPP_PHONE_NUMBER_ID}/messages"
+    try:
+        resp = requests.post(
+            url,
+            headers={**meta_headers(), "Content-Type": "application/json"},
+            json=payload,
+            timeout=30,
+        )
+    except requests.exceptions.RequestException as e:
+        print(f"Erro de rede ao enviar lista: {e}")
+        return False
+
+    if not resp.ok:
+        print(f"Erro ao enviar lista: {resp.status_code} - {resp.text}")
+    return resp.ok
+
+
+def send_settings_menu(to_number: str) -> None:
+    send_whatsapp_interactive_buttons(
+        to_number,
+        "Escolha o que quer ajustar:",
+        [
+            ("cfg_margin", "Margem"),
+            ("cfg_size", "Tamanho"),
+            ("cfg_position", "Posicao"),
+        ],
+    )
+
+
+def handle_interactive_reply(from_number: str, reply_id: str) -> None:
+    settings = get_user_settings(from_number)
+
+    if reply_id == "cfg_margin":
+        send_whatsapp_text(
+            from_number,
+            "Copie, cole e troque o numero:\n"
+            f"margem {settings['margin_pct']}\n\n"
+            f"Faixa permitida: {MIN_MARGIN_PCT} a {MAX_MARGIN_PCT}.",
+        )
+        return
+
+    if reply_id == "cfg_size":
+        send_whatsapp_text(
+            from_number,
+            "Copie, cole e troque o numero:\n"
+            f"tamanho {settings['size_pct']}\n\n"
+            f"Faixa permitida: {MIN_SIZE_PCT} a {MAX_SIZE_PCT}.",
+        )
+        return
+
+    if reply_id == "cfg_position":
+        sent = send_whatsapp_interactive_list(
+            from_number,
+            "Selecione a posicao da logo:",
+            "Escolher",
+            POSITION_ROWS,
+        )
+        if not sent:
+            positions = "\n".join(f"- {name}" for _, name in POSITION_ROWS)
+            send_whatsapp_text(
+                from_number,
+                "Nao consegui abrir lista agora. Envie uma dessas posicoes:\n"
+                f"{positions}",
+            )
+        return
+
+    position_map = {row_id: name for row_id, name in POSITION_ROWS}
+    if reply_id in position_map:
+        settings["position"] = position_map[reply_id]
+        settings = set_user_settings(from_number, settings)
+        send_whatsapp_text(
+            from_number,
+            f"Posicao atualizada para: {settings['position']}.\n\n{format_status_message(settings)}",
+        )
+        return
+
+    send_whatsapp_text(from_number, "Opcao nao reconhecida. Envie 'menu' ou 'status'.")
 
 
 def handle_text_command(from_number: str, text: str) -> None:
@@ -212,6 +404,11 @@ def handle_text_command(from_number: str, text: str) -> None:
 
     if not cmd or cmd in {"status", "config", "configuracao", "configuracoes", "ajuda", "help"}:
         send_whatsapp_text(from_number, format_status_message(settings))
+        send_settings_menu(from_number)
+        return
+
+    if cmd in {"menu", "opcoes", "opcao", "enquete"}:
+        send_settings_menu(from_number)
         return
 
     if cmd in {"reset", "padrao", "default"}:
@@ -219,44 +416,55 @@ def handle_text_command(from_number: str, text: str) -> None:
         send_whatsapp_text(from_number, "Preset resetado.\n\n" + format_status_message(settings))
         return
 
-    if cmd.startswith("margem"):
-        match = re.search(r"-?\d+", cmd)
-        if not match:
-            send_whatsapp_text(from_number, f"Use: margem <{MIN_MARGIN_PCT}-{MAX_MARGIN_PCT}>")
-            return
-        margin_pct = max(MIN_MARGIN_PCT, min(MAX_MARGIN_PCT, int(match.group(0))))
-        settings["margin_pct"] = margin_pct
+    updates = []
+    warnings = []
+    has_update = False
+
+    if re.search(r"\bmargem\b", cmd):
+        match = re.search(r"\bmargem\b\s*[:=]?\s*(-?\d+)", cmd)
+        if match:
+            margin_pct = max(MIN_MARGIN_PCT, min(MAX_MARGIN_PCT, int(match.group(1))))
+            settings["margin_pct"] = margin_pct
+            updates.append(f"- Margem: {margin_pct}%")
+            has_update = True
+        else:
+            warnings.append(f"- 'margem' sem numero. Exemplo: margem {MIN_MARGIN_PCT}")
+
+    if re.search(r"\btamanho\b", cmd):
+        match = re.search(r"\btamanho\b\s*[:=]?\s*(-?\d+)", cmd)
+        if match:
+            size_pct = max(MIN_SIZE_PCT, min(MAX_SIZE_PCT, int(match.group(1))))
+            settings["size_pct"] = size_pct
+            updates.append(f"- Tamanho: {size_pct}%")
+            has_update = True
+        else:
+            warnings.append(f"- 'tamanho' sem numero. Exemplo: tamanho {DEFAULT_SIZE_PCT}")
+
+    parsed_position = ""
+    if re.search(r"\bposicao\b", cmd):
+        position_match = re.search(r"\bposicao\b\s+(.+)", cmd)
+        parsed_position = _normalize_position(position_match.group(1) if position_match else "")
+        if not parsed_position:
+            warnings.append("- Nao entendi a posicao apos 'posicao'.")
+    else:
+        parsed_position = _normalize_position(cmd)
+
+    if parsed_position:
+        settings["position"] = parsed_position
+        updates.append(f"- Posicao: {parsed_position}")
+        has_update = True
+
+    if has_update:
         settings = set_user_settings(from_number, settings)
-        send_whatsapp_text(from_number, f"Margem atualizada para {margin_pct}%.\n\n" + format_status_message(settings))
+        parts = ["Atualizacoes aplicadas:", *updates]
+        if warnings:
+            parts.extend(["", "Ajustes ignorados:", *warnings])
+        parts.extend(["", format_status_message(settings)])
+        send_whatsapp_text(from_number, "\n".join(parts))
         return
 
-    if cmd.startswith("tamanho"):
-        match = re.search(r"-?\d+", cmd)
-        if not match:
-            send_whatsapp_text(from_number, f"Use: tamanho <{MIN_SIZE_PCT}-{MAX_SIZE_PCT}>")
-            return
-        size_pct = max(MIN_SIZE_PCT, min(MAX_SIZE_PCT, int(match.group(0))))
-        settings["size_pct"] = size_pct
-        settings = set_user_settings(from_number, settings)
-        send_whatsapp_text(from_number, f"Tamanho atualizado para {size_pct}%.\n\n" + format_status_message(settings))
-        return
-
-    if cmd.startswith("posicao"):
-        desired = raw_text.split(" ", 1)[1].strip() if " " in raw_text else ""
-        parsed = _normalize_position(desired)
-        if not parsed:
-            send_whatsapp_text(from_number, "Use: posicao <nome>. Envie 'status' para ver as opcoes.")
-            return
-        settings["position"] = parsed
-        settings = set_user_settings(from_number, settings)
-        send_whatsapp_text(from_number, f"Posicao atualizada para: {parsed}.\n\n" + format_status_message(settings))
-        return
-
-    direct_position = _normalize_position(raw_text)
-    if direct_position:
-        settings["position"] = direct_position
-        settings = set_user_settings(from_number, settings)
-        send_whatsapp_text(from_number, f"Posicao atualizada para: {direct_position}.\n\n" + format_status_message(settings))
+    if warnings:
+        send_whatsapp_text(from_number, "\n".join(["Nao consegui aplicar os comandos:", *warnings, "", format_status_message(settings)]))
         return
 
     send_whatsapp_text(
@@ -550,10 +758,27 @@ def handle_incoming_message(message: dict) -> None:
         handle_text_command(from_number, text_body)
         return
 
+    if message_type == "interactive":
+        interactive = message.get("interactive") or {}
+        interactive_type = interactive.get("type")
+
+        if interactive_type == "button_reply":
+            reply_id = (interactive.get("button_reply") or {}).get("id", "")
+            handle_interactive_reply(from_number, reply_id)
+            return
+
+        if interactive_type == "list_reply":
+            reply_id = (interactive.get("list_reply") or {}).get("id", "")
+            handle_interactive_reply(from_number, reply_id)
+            return
+
+        send_whatsapp_text(from_number, "Interacao nao reconhecida. Envie 'menu' ou 'status'.")
+        return
+
     if message_type not in {"image", "video"}:
         send_whatsapp_text(
             from_number,
-            "Envie uma foto/video para aplicar logo ou envie 'status' para configurar preset.",
+            "Envie uma foto/video para aplicar logo ou envie 'menu'/'status' para configurar preset.",
         )
         return
 
