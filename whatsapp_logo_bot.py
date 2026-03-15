@@ -325,16 +325,22 @@ def download_whatsapp_media(media_id: str, dest: Path) -> Tuple[Path, str]:
         raise RuntimeError("WHATSAPP_TOKEN nao configurado.")
 
     media_meta_url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{media_id}"
-    meta_resp = requests.get(media_meta_url, headers=meta_headers(), timeout=30)
-    meta_resp.raise_for_status()
+    try:
+        meta_resp = requests.get(media_meta_url, headers=meta_headers(), timeout=30)
+        meta_resp.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f"Falha ao consultar media na Meta: {e}") from e
     media_url = (meta_resp.json() or {}).get("url")
     ct = (meta_resp.json() or {}).get("mime_type", "")
 
     if not media_url:
         raise RuntimeError("Meta nao retornou URL da media.")
 
-    media_resp = requests.get(media_url, headers=meta_headers(), stream=True, timeout=120)
-    media_resp.raise_for_status()
+    try:
+        media_resp = requests.get(media_url, headers=meta_headers(), stream=True, timeout=120)
+        media_resp.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f"Falha ao baixar arquivo da Meta: {e}") from e
     ct = media_resp.headers.get("Content-Type", ct)
 
     ext = safe_ext_from_content_type(ct)
@@ -360,12 +366,16 @@ def send_whatsapp_text(to_number: str, body: str) -> bool:
         "type": "text",
         "text": {"body": body},
     }
-    resp = requests.post(
-        url,
-        headers={**meta_headers(), "Content-Type": "application/json"},
-        json=payload,
-        timeout=30,
-    )
+    try:
+        resp = requests.post(
+            url,
+            headers={**meta_headers(), "Content-Type": "application/json"},
+            json=payload,
+            timeout=30,
+        )
+    except requests.exceptions.RequestException as e:
+        print(f"Erro de rede ao enviar texto: {e}")
+        return False
     if not resp.ok:
         print(f"Erro ao enviar texto: {resp.status_code} - {resp.text}")
     return resp.ok
@@ -389,12 +399,16 @@ def send_whatsapp_media(to_number: str, media_type: str, media_link: str, captio
         "type": media_type,
         media_type: media_obj,
     }
-    resp = requests.post(
-        url,
-        headers={**meta_headers(), "Content-Type": "application/json"},
-        json=payload,
-        timeout=30,
-    )
+    try:
+        resp = requests.post(
+            url,
+            headers={**meta_headers(), "Content-Type": "application/json"},
+            json=payload,
+            timeout=30,
+        )
+    except requests.exceptions.RequestException as e:
+        print(f"Erro de rede ao enviar media: {e}")
+        return False
     if not resp.ok:
         print(f"Erro ao enviar media: {resp.status_code} - {resp.text}")
     return resp.ok
@@ -516,7 +530,10 @@ def whatsapp_cloud_events():
         for change in entry.get("changes", []):
             value = change.get("value", {})
             for incoming_message in value.get("messages", []):
-                handle_incoming_message(incoming_message)
+                try:
+                    handle_incoming_message(incoming_message)
+                except Exception as e:
+                    print(f"Erro ao processar mensagem recebida: {e}")
 
     return "EVENT_RECEIVED", 200
 
