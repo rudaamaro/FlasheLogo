@@ -84,6 +84,31 @@ POSITION_ROWS = [
     ("pos_bottom_right", "Canto inferior direito"),
 ]
 
+MARGIN_ROWS = [
+    ("margin_0", "0%"),
+    ("margin_1", "1%"),
+    ("margin_2", "2%"),
+    ("margin_3", "3%"),
+    ("margin_4", "4%"),
+    ("margin_5", "5%"),
+    ("margin_7", "7%"),
+    ("margin_10", "10%"),
+    ("margin_15", "15%"),
+    ("margin_20", "20%"),
+]
+
+SIZE_ROWS = [
+    ("size_10", "10%"),
+    ("size_15", "15%"),
+    ("size_20", "20%"),
+    ("size_25", "25%"),
+    ("size_30", "30%"),
+    ("size_35", "35%"),
+    ("size_40", "40%"),
+    ("size_45", "45%"),
+    ("size_50", "50%"),
+]
+
 app = Flask(__name__)
 SETTINGS_PATH = BASE_DIR / "user_presets.json"
 USER_SETTINGS: Dict[str, Dict[str, object]] = {}
@@ -208,27 +233,16 @@ def set_user_settings(phone: str, settings: Dict[str, object]) -> Dict[str, obje
 
 
 def format_status_message(settings: Dict[str, object]) -> str:
-    positions = "\n".join(f"- {name}" for _, name in POSITION_ROWS)
     return (
         "Status atual:\n"
         f"- Margem: {settings['margin_pct']}%\n"
         f"- Tamanho da logo: {settings['size_pct']}%\n"
         f"- Posicao: {settings['position']}\n\n"
-        "Comandos (pode mandar tudo junto na mesma mensagem):\n"
-        f"- margem N ({MIN_MARGIN_PCT} a {MAX_MARGIN_PCT})\n"
-        f"- tamanho N ({MIN_SIZE_PCT} a {MAX_SIZE_PCT})\n"
-        "- posicao nome\n"
-        "- status\n"
+        "Comandos rapidos:\n"
         "- menu\n"
         "- reset\n\n"
-        "Modelo copiar/colar (troque os valores e envie):\n"
-        "margem 3\n"
-        "tamanho 40\n"
-        "canto superior esquerdo\n\n"
-        "Modelo em 1 linha:\n"
-        "margem 3 tamanho 40 canto superior esquerdo\n\n"
-        "Posicoes aceitas:\n"
-        f"{positions}"
+        f"Texto direto: margem N ({MIN_MARGIN_PCT}-{MAX_MARGIN_PCT}) | "
+        f"tamanho N ({MIN_SIZE_PCT}-{MAX_SIZE_PCT})"
     )
 
 
@@ -351,20 +365,60 @@ def handle_interactive_reply(from_number: str, reply_id: str) -> None:
     settings = get_user_settings(from_number)
 
     if reply_id == "cfg_margin":
-        send_whatsapp_text(
+        sent = send_whatsapp_interactive_list(
             from_number,
-            "Copie, cole e troque o numero:\n"
-            f"margem {settings['margin_pct']}\n\n"
-            f"Faixa permitida: {MIN_MARGIN_PCT} a {MAX_MARGIN_PCT}.",
+            "Selecione a margem:",
+            "Margem",
+            MARGIN_ROWS,
         )
+        if not sent:
+            send_whatsapp_text(
+                from_number,
+                f"Digite: margem N ({MIN_MARGIN_PCT}-{MAX_MARGIN_PCT})",
+            )
         return
 
     if reply_id == "cfg_size":
+        sent = send_whatsapp_interactive_list(
+            from_number,
+            "Selecione o tamanho da logo:",
+            "Tamanho",
+            SIZE_ROWS,
+        )
+        if not sent:
+            send_whatsapp_text(
+                from_number,
+                f"Digite: tamanho N ({MIN_SIZE_PCT}-{MAX_SIZE_PCT})",
+            )
+        return
+
+    if reply_id.startswith("margin_"):
+        try:
+            margin_pct = int(reply_id.split("_", 1)[1])
+        except ValueError:
+            send_whatsapp_text(from_number, "Margem invalida. Envie 'menu'.")
+            return
+        margin_pct = max(MIN_MARGIN_PCT, min(MAX_MARGIN_PCT, margin_pct))
+        settings["margin_pct"] = margin_pct
+        settings = set_user_settings(from_number, settings)
         send_whatsapp_text(
             from_number,
-            "Copie, cole e troque o numero:\n"
-            f"tamanho {settings['size_pct']}\n\n"
-            f"Faixa permitida: {MIN_SIZE_PCT} a {MAX_SIZE_PCT}.",
+            f"Margem atualizada para {margin_pct}%.\n\n{format_status_message(settings)}",
+        )
+        return
+
+    if reply_id.startswith("size_"):
+        try:
+            size_pct = int(reply_id.split("_", 1)[1])
+        except ValueError:
+            send_whatsapp_text(from_number, "Tamanho invalido. Envie 'menu'.")
+            return
+        size_pct = max(MIN_SIZE_PCT, min(MAX_SIZE_PCT, size_pct))
+        settings["size_pct"] = size_pct
+        settings = set_user_settings(from_number, settings)
+        send_whatsapp_text(
+            from_number,
+            f"Tamanho atualizado para {size_pct}%.\n\n{format_status_message(settings)}",
         )
         return
 
