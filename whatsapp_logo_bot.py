@@ -3,9 +3,11 @@ import json
 import re
 import uuid
 import socket
+import time
 import unicodedata
 from pathlib import Path
 from typing import Dict, List, Tuple
+from threading import Lock
 
 import requests
 import numpy as np
@@ -114,6 +116,9 @@ SIZE_ROWS = [
 app = Flask(__name__)
 SETTINGS_PATH = BASE_DIR / "user_presets.json"
 USER_SETTINGS: Dict[str, Dict[str, object]] = {}
+PROCESSED_MESSAGE_TTL_SEC = int(os.getenv("PROCESSED_MESSAGE_TTL_SEC", "3600"))
+PROCESSED_MESSAGE_IDS: Dict[str, float] = {}
+PROCESSED_MESSAGE_LOCK = Lock()
 
 
 def _configure_network_stack() -> None:
@@ -128,6 +133,25 @@ def _configure_network_stack() -> None:
         print("FORCE_IPV4 ativo: requisicoes HTTP usando IPv4.")
     except Exception as e:
         print(f"Nao foi possivel ativar FORCE_IPV4: {e}")
+
+
+def _is_duplicate_message(message_id: str) -> bool:
+    if not message_id:
+        return False
+
+    now = time.time()
+    with PROCESSED_MESSAGE_LOCK:
+        # Limpa ids antigos para limitar uso de memoria.
+        expired_before = now - PROCESSED_MESSAGE_TTL_SEC
+        expired_keys = [mid for mid, ts in PROCESSED_MESSAGE_IDS.items() if ts < expired_before]
+        for mid in expired_keys:
+            PROCESSED_MESSAGE_IDS.pop(mid, None)
+
+        if message_id in PROCESSED_MESSAGE_IDS:
+            return True
+
+        PROCESSED_MESSAGE_IDS[message_id] = now
+        return False
 
 
 def _default_user_settings() -> Dict[str, object]:
@@ -539,7 +563,8 @@ def handle_text_command(from_number: str, text: str) -> None:
 
     send_whatsapp_text(
         from_number,
-        "Comando nao reconhecido. Envie 'status' para ver configuracoes e opcoes.",
+        "Envie uma foto ou video para aplicar a logo.\n"
+        "Se quiser ajustar configuracoes, envie 'menu'.",
     )
 
 
@@ -819,8 +844,13 @@ def whatsapp_cloud_events():
 def handle_incoming_message(message: dict) -> None:
     from_number = message.get("from")
     message_type = message.get("type")
+    message_id = (message.get("id") or "").strip()
 
     if not from_number:
+        return
+
+    if message_id and _is_duplicate_message(message_id):
+        print(f"Ignorando mensagem duplicada: {message_id}")
         return
 
     if message_type == "text":
