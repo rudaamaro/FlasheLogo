@@ -336,9 +336,7 @@ def format_status_message(settings: Dict[str, object]) -> str:
         f"- Posicao: {settings['position']}\n\n"
         "Comandos rapidos:\n"
         "- menu\n"
-        "- reset\n\n"
-        f"Texto direto: margem N ({MIN_MARGIN_PCT}-{MAX_MARGIN_PCT}) | "
-        f"tamanho N ({MIN_SIZE_PCT}-{MAX_SIZE_PCT})"
+        "- reset"
     )
 
 
@@ -514,7 +512,7 @@ def handle_interactive_reply(from_number: str, reply_id: str) -> None:
         settings = set_user_settings(from_number, settings)
         send_whatsapp_text(
             from_number,
-            f"Tamanho atualizado para {size_pct}%.\n\n{format_status_message(settings)}",
+            f"*Tamanho atualizado para {size_pct}%.*\n\n{format_status_message(settings)}",
         )
         return
 
@@ -569,6 +567,7 @@ def handle_text_command(from_number: str, text: str) -> None:
     updates = []
     warnings = []
     has_update = False
+    size_updated = False
 
     if re.search(r"\bmargem\b", cmd):
         match = re.search(r"\bmargem\b\s*[:=]?\s*(-?\d+)", cmd)
@@ -585,8 +584,9 @@ def handle_text_command(from_number: str, text: str) -> None:
         if match:
             size_pct = max(MIN_SIZE_PCT, min(MAX_SIZE_PCT, int(match.group(1))))
             settings["size_pct"] = size_pct
-            updates.append(f"- Tamanho: {size_pct}%")
+            updates.append(f"- *Tamanho:* {size_pct}%")
             has_update = True
+            size_updated = True
         else:
             warnings.append(f"- 'tamanho' sem numero. Exemplo: tamanho {DEFAULT_SIZE_PCT}")
 
@@ -606,7 +606,10 @@ def handle_text_command(from_number: str, text: str) -> None:
 
     if has_update:
         settings = set_user_settings(from_number, settings)
-        parts = ["Atualizacoes aplicadas:", *updates]
+        parts = []
+        if size_updated:
+            parts.extend([f"*Tamanho atualizado para {settings['size_pct']}%.*", ""])
+        parts.extend(["Atualizacoes aplicadas:", *updates])
         if warnings:
             parts.extend(["", "Ajustes ignorados:", *warnings])
         parts.extend(["", format_status_message(settings)])
@@ -881,18 +884,86 @@ def verify():
     return "error", 403
 
 
+def _collect_media_batch_stats(data: dict) -> Dict[str, Dict[str, object]]:
+    stats_by_number: Dict[str, Dict[str, object]] = {}
+    for entry in data.get("entry", []):
+        for change in entry.get("changes", []):
+            value = change.get("value", {})
+            for incoming_message in value.get("messages", []):
+                from_number = incoming_message.get("from")
+                message_type = incoming_message.get("type")
+                if not from_number or message_type not in {"image", "video"}:
+                    continue
+
+                stats = stats_by_number.get(from_number)
+                if not stats:
+                    stats = {
+                        "image_total": 0,
+                        "video_total": 0,
+                        "image_done": 0,
+                        "video_done": 0,
+                        "started": False,
+                        "finished": False,
+                    }
+                    stats_by_number[from_number] = stats
+
+                if message_type == "image":
+                    stats["image_total"] = int(stats["image_total"]) + 1
+                else:
+                    stats["video_total"] = int(stats["video_total"]) + 1
+    return stats_by_number
+
+
 @app.post("/webhook")
 def whatsapp_cloud_events():
     data = request.get_json(silent=True) or {}
+    batch_stats = _collect_media_batch_stats(data)
 
     for entry in data.get("entry", []):
         for change in entry.get("changes", []):
             value = change.get("value", {})
             for incoming_message in value.get("messages", []):
+                from_number = incoming_message.get("from")
+                message_type = incoming_message.get("type")
+                stats = batch_stats.get(from_number) if from_number else None
+
+                if stats and message_type in {"image", "video"}:
+                    image_total = int(stats["image_total"])
+                    video_total = int(stats["video_total"])
+                    total = image_total + video_total
+                    if total > 1 and not bool(stats["started"]):
+                        stats["started"] = True
+                        send_whatsapp_text(
+                            from_number,
+                            f"{total} midias recebidas.\n"
+                            f"Processando 0/{image_total} fotos e 0/{video_total} videos.",
+                        )
+
                 try:
                     handle_incoming_message(incoming_message)
                 except Exception as e:
                     print(f"Erro ao processar mensagem recebida: {e}")
+                finally:
+                    if stats and message_type in {"image", "video"}:
+                        if message_type == "image":
+                            stats["image_done"] = int(stats["image_done"]) + 1
+                        else:
+                            stats["video_done"] = int(stats["video_done"]) + 1
+
+                        image_total = int(stats["image_total"])
+                        video_total = int(stats["video_total"])
+                        image_done = int(stats["image_done"])
+                        video_done = int(stats["video_done"])
+                        total = image_total + video_total
+                        done_total = image_done + video_done
+
+                        if total > 1 and done_total >= total and not bool(stats["finished"]):
+                            stats["finished"] = True
+                            send_whatsapp_text(
+                                from_number,
+                                f"Concluido: {image_done}/{image_total} fotos e "
+                                f"{video_done}/{video_total} videos processados.",
+                            )
 
     return "EVENT_RECEIVED", 200
 
