@@ -115,8 +115,10 @@ SIZE_ROWS = [
 
 app = Flask(__name__)
 SETTINGS_PATH = BASE_DIR / "user_presets.json"
+PROCESSED_IDS_PATH = BASE_DIR / "processed_message_ids.json"
 USER_SETTINGS: Dict[str, Dict[str, object]] = {}
 PROCESSED_MESSAGE_TTL_SEC = int(os.getenv("PROCESSED_MESSAGE_TTL_SEC", "3600"))
+MAX_MESSAGE_AGE_SEC = int(os.getenv("MAX_MESSAGE_AGE_SEC", "900"))
 PROCESSED_MESSAGE_IDS: Dict[str, float] = {}
 PROCESSED_MESSAGE_LOCK = Lock()
 
@@ -144,14 +146,68 @@ def _is_duplicate_message(message_id: str) -> bool:
         # Limpa ids antigos para limitar uso de memoria.
         expired_before = now - PROCESSED_MESSAGE_TTL_SEC
         expired_keys = [mid for mid, ts in PROCESSED_MESSAGE_IDS.items() if ts < expired_before]
+        changed = False
         for mid in expired_keys:
             PROCESSED_MESSAGE_IDS.pop(mid, None)
+            changed = True
 
         if message_id in PROCESSED_MESSAGE_IDS:
             return True
 
         PROCESSED_MESSAGE_IDS[message_id] = now
+        changed = True
+        if changed:
+            _save_processed_message_ids()
         return False
+
+
+def _is_message_too_old(message_timestamp: str) -> bool:
+    if MAX_MESSAGE_AGE_SEC <= 0:
+        return False
+    if not message_timestamp:
+        return False
+    try:
+        ts = float(message_timestamp)
+    except (TypeError, ValueError):
+        return False
+    age = time.time() - ts
+    return age > MAX_MESSAGE_AGE_SEC
+
+
+def _load_processed_message_ids() -> None:
+    global PROCESSED_MESSAGE_IDS
+    if not PROCESSED_IDS_PATH.exists():
+        PROCESSED_MESSAGE_IDS = {}
+        return
+    try:
+        raw = json.loads(PROCESSED_IDS_PATH.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            PROCESSED_MESSAGE_IDS = {}
+            return
+        now = time.time()
+        parsed: Dict[str, float] = {}
+        for mid, ts in raw.items():
+            if isinstance(mid, str):
+                try:
+                    ts_val = float(ts)
+                except (TypeError, ValueError):
+                    continue
+                if ts_val >= (now - PROCESSED_MESSAGE_TTL_SEC):
+                    parsed[mid] = ts_val
+        PROCESSED_MESSAGE_IDS = parsed
+    except Exception as e:
+        print(f"Falha ao carregar cache de deduplicacao: {e}")
+        PROCESSED_MESSAGE_IDS = {}
+
+
+def _save_processed_message_ids() -> None:
+    try:
+        PROCESSED_IDS_PATH.write_text(
+            json.dumps(PROCESSED_MESSAGE_IDS, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        print(f"Falha ao salvar cache de deduplicacao: {e}")
 
 
 def _default_user_settings() -> Dict[str, object]:
@@ -845,8 +901,16 @@ def handle_incoming_message(message: dict) -> None:
     from_number = message.get("from")
     message_type = message.get("type")
     message_id = (message.get("id") or "").strip()
+    message_timestamp = (message.get("timestamp") or "").strip()
 
     if not from_number:
+        return
+
+    if _is_message_too_old(message_timestamp):
+        print(
+            f"Ignorando mensagem antiga: id={message_id or '-'} "
+            f"timestamp={message_timestamp or '-'}"
+        )
         return
 
     if message_id and _is_duplicate_message(message_id):
@@ -940,6 +1004,7 @@ def handle_incoming_message(message: dict) -> None:
 
 
 _load_user_settings()
+_load_processed_message_ids()
 _configure_network_stack()
 
 
