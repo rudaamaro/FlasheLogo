@@ -1,7 +1,10 @@
 import os
+import json
+import re
 import uuid
+import unicodedata
 from pathlib import Path
-from typing import Tuple
+from typing import Dict, Tuple
 
 import requests
 import numpy as np
@@ -53,11 +56,213 @@ DEFAULT_POSITION = "Canto superior esquerdo"
 # --- AQUI ESTÃƒÂ O CONTROLE DO TAMANHO ---
 # Estava 18. Tente 35 ou 40 para ficar bem maior.
 # Esse nÃƒÂºmero representa a porcentagem da largura da imagem total que a logo vai ocupar.
-DEFAULT_SIZE_PCT = 35
-
+DEFAULT_SIZE_PCT = 20
 DEFAULT_MARGIN_PCT = 3  # Margem (distÃƒÂ¢ncia da borda)
 
+MIN_SIZE_PCT = 1
+MAX_SIZE_PCT = 50
+MIN_MARGIN_PCT = 0
+MAX_MARGIN_PCT = 20
+
+ALLOWED_POSITIONS = {
+    "canto superior esquerdo": "Canto superior esquerdo",
+    "centro superior": "Centro superior",
+    "canto superior direito": "Canto superior direito",
+    "centro": "Centro",
+    "canto inferior esquerdo": "Canto inferior esquerdo",
+    "centro inferior": "Centro inferior",
+    "canto inferior direito": "Canto inferior direito",
+}
+
 app = Flask(__name__)
+SETTINGS_PATH = BASE_DIR / "user_presets.json"
+USER_SETTINGS: Dict[str, Dict[str, object]] = {}
+
+
+def _default_user_settings() -> Dict[str, object]:
+    return {
+        "position": DEFAULT_POSITION,
+        "size_pct": DEFAULT_SIZE_PCT,
+        "margin_pct": DEFAULT_MARGIN_PCT,
+    }
+
+
+def _normalize_text(value: str) -> str:
+    value = value or ""
+    value = unicodedata.normalize("NFKD", value)
+    value = "".join(ch for ch in value if not unicodedata.combining(ch))
+    value = value.lower().strip()
+    return " ".join(value.split())
+
+
+def _normalize_position(value: str) -> str:
+    normalized = _normalize_text(value)
+
+    if normalized in ALLOWED_POSITIONS:
+        return ALLOWED_POSITIONS[normalized]
+
+    if "superior" in normalized and "esquerda" in normalized:
+        return "Canto superior esquerdo"
+    if "superior" in normalized and "direita" in normalized:
+        return "Canto superior direito"
+    if "superior" in normalized and "centro" in normalized:
+        return "Centro superior"
+    if "inferior" in normalized and "esquerda" in normalized:
+        return "Canto inferior esquerdo"
+    if "inferior" in normalized and "direita" in normalized:
+        return "Canto inferior direito"
+    if "inferior" in normalized and "centro" in normalized:
+        return "Centro inferior"
+    if normalized in {"centro", "meio"}:
+        return "Centro"
+    return ""
+
+
+def _sanitize_user_settings(settings: Dict[str, object]) -> Dict[str, object]:
+    defaults = _default_user_settings()
+    position = _normalize_position(str(settings.get("position", defaults["position"])))
+    size_raw = settings.get("size_pct", defaults["size_pct"])
+    margin_raw = settings.get("margin_pct", defaults["margin_pct"])
+
+    try:
+        size_pct = int(size_raw)
+    except (TypeError, ValueError):
+        size_pct = int(defaults["size_pct"])
+
+    try:
+        margin_pct = int(margin_raw)
+    except (TypeError, ValueError):
+        margin_pct = int(defaults["margin_pct"])
+
+    return {
+        "position": position or defaults["position"],
+        "size_pct": max(MIN_SIZE_PCT, min(MAX_SIZE_PCT, size_pct)),
+        "margin_pct": max(MIN_MARGIN_PCT, min(MAX_MARGIN_PCT, margin_pct)),
+    }
+
+
+def _load_user_settings() -> None:
+    global USER_SETTINGS
+    if not SETTINGS_PATH.exists():
+        USER_SETTINGS = {}
+        return
+
+    try:
+        data = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            USER_SETTINGS = {}
+            return
+        parsed: Dict[str, Dict[str, object]] = {}
+        for phone, settings in data.items():
+            if isinstance(phone, str) and isinstance(settings, dict):
+                parsed[phone] = _sanitize_user_settings(settings)
+        USER_SETTINGS = parsed
+    except Exception as e:
+        print(f"Falha ao carregar presets: {e}")
+        USER_SETTINGS = {}
+
+
+def _save_user_settings() -> None:
+    try:
+        SETTINGS_PATH.write_text(
+            json.dumps(USER_SETTINGS, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        print(f"Falha ao salvar presets: {e}")
+
+
+def get_user_settings(phone: str) -> Dict[str, object]:
+    settings = USER_SETTINGS.get(phone)
+    if not settings:
+        settings = _default_user_settings()
+    settings = _sanitize_user_settings(settings)
+    USER_SETTINGS[phone] = settings
+    return settings
+
+
+def set_user_settings(phone: str, settings: Dict[str, object]) -> Dict[str, object]:
+    normalized = _sanitize_user_settings(settings)
+    USER_SETTINGS[phone] = normalized
+    _save_user_settings()
+    return normalized
+
+
+def format_status_message(settings: Dict[str, object]) -> str:
+    positions = ", ".join(ALLOWED_POSITIONS.values())
+    return (
+        "Status atual:\n"
+        f"- Margem: {settings['margin_pct']}%\n"
+        f"- Tamanho da logo: {settings['size_pct']}%\n"
+        f"- Posicao: {settings['position']}\n\n"
+        "Comandos:\n"
+        f"- margem <{MIN_MARGIN_PCT}-{MAX_MARGIN_PCT}>\n"
+        f"- tamanho <{MIN_SIZE_PCT}-{MAX_SIZE_PCT}>\n"
+        "- posicao <nome>\n"
+        "- status\n"
+        "- reset\n\n"
+        f"Posicoes aceitas: {positions}"
+    )
+
+
+def handle_text_command(from_number: str, text: str) -> None:
+    raw_text = (text or "").strip()
+    cmd = _normalize_text(raw_text)
+    settings = get_user_settings(from_number)
+
+    if not cmd or cmd in {"status", "config", "configuracao", "configuracoes", "ajuda", "help"}:
+        send_whatsapp_text(from_number, format_status_message(settings))
+        return
+
+    if cmd in {"reset", "padrao", "default"}:
+        settings = set_user_settings(from_number, _default_user_settings())
+        send_whatsapp_text(from_number, "Preset resetado.\n\n" + format_status_message(settings))
+        return
+
+    if cmd.startswith("margem"):
+        match = re.search(r"-?\d+", cmd)
+        if not match:
+            send_whatsapp_text(from_number, f"Use: margem <{MIN_MARGIN_PCT}-{MAX_MARGIN_PCT}>")
+            return
+        margin_pct = max(MIN_MARGIN_PCT, min(MAX_MARGIN_PCT, int(match.group(0))))
+        settings["margin_pct"] = margin_pct
+        settings = set_user_settings(from_number, settings)
+        send_whatsapp_text(from_number, f"Margem atualizada para {margin_pct}%.\n\n" + format_status_message(settings))
+        return
+
+    if cmd.startswith("tamanho"):
+        match = re.search(r"-?\d+", cmd)
+        if not match:
+            send_whatsapp_text(from_number, f"Use: tamanho <{MIN_SIZE_PCT}-{MAX_SIZE_PCT}>")
+            return
+        size_pct = max(MIN_SIZE_PCT, min(MAX_SIZE_PCT, int(match.group(0))))
+        settings["size_pct"] = size_pct
+        settings = set_user_settings(from_number, settings)
+        send_whatsapp_text(from_number, f"Tamanho atualizado para {size_pct}%.\n\n" + format_status_message(settings))
+        return
+
+    if cmd.startswith("posicao"):
+        desired = raw_text.split(" ", 1)[1].strip() if " " in raw_text else ""
+        parsed = _normalize_position(desired)
+        if not parsed:
+            send_whatsapp_text(from_number, "Use: posicao <nome>. Envie 'status' para ver as opcoes.")
+            return
+        settings["position"] = parsed
+        settings = set_user_settings(from_number, settings)
+        send_whatsapp_text(from_number, f"Posicao atualizada para: {parsed}.\n\n" + format_status_message(settings))
+        return
+
+    direct_position = _normalize_position(raw_text)
+    if direct_position:
+        settings["position"] = direct_position
+        settings = set_user_settings(from_number, settings)
+        send_whatsapp_text(from_number, f"Posicao atualizada para: {direct_position}.\n\n" + format_status_message(settings))
+        return
+
+    send_whatsapp_text(
+        from_number,
+        "Comando nao reconhecido. Envie 'status' para ver configuracoes e opcoes.",
+    )
 
 
 # =========================
@@ -72,8 +277,8 @@ def compute_logo_size(
     base_w, base_h = base_size
     logo_w, logo_h = logo_size
 
-    size_pct = max(1, min(50, int(size_pct)))
-    margin_pct = max(0, min(20, int(margin_pct)))
+    size_pct = max(MIN_SIZE_PCT, min(MAX_SIZE_PCT, int(size_pct)))
+    margin_pct = max(MIN_MARGIN_PCT, min(MAX_MARGIN_PCT, int(margin_pct)))
 
     target_w = int(base_w * (size_pct / 100.0))
     scale = target_w / float(logo_w)
@@ -323,8 +528,16 @@ def handle_incoming_message(message: dict) -> None:
     if not from_number:
         return
 
+    if message_type == "text":
+        text_body = (message.get("text") or {}).get("body", "")
+        handle_text_command(from_number, text_body)
+        return
+
     if message_type not in {"image", "video"}:
-        send_whatsapp_text(from_number, "Envie uma foto ou video para eu aplicar a logo.")
+        send_whatsapp_text(
+            from_number,
+            "Envie uma foto/video para aplicar logo ou envie 'status' para configurar preset.",
+        )
         return
 
     media_id = (message.get(message_type) or {}).get("id")
@@ -347,11 +560,28 @@ def handle_incoming_message(message: dict) -> None:
         return
 
     try:
+        user_settings = get_user_settings(from_number)
+        position = str(user_settings["position"])
+        size_pct = int(user_settings["size_pct"])
+        margin_pct = int(user_settings["margin_pct"])
+
         if "image/" in (media_content_type or ""):
-            out_path = apply_logo_to_image(downloaded_path, LOGO_PATH)
+            out_path = apply_logo_to_image(
+                downloaded_path,
+                LOGO_PATH,
+                position=position,
+                size_pct=size_pct,
+                margin_pct=margin_pct,
+            )
             outbound_type = "image"
         elif "video/" in (media_content_type or ""):
-            out_path = apply_logo_to_video(downloaded_path, LOGO_PATH)
+            out_path = apply_logo_to_video(
+                downloaded_path,
+                LOGO_PATH,
+                position=position,
+                size_pct=size_pct,
+                margin_pct=margin_pct,
+            )
             outbound_type = "video"
         else:
             send_whatsapp_text(from_number, "Tipo de arquivo nao suportado. Envie imagem ou video.")
@@ -362,10 +592,12 @@ def handle_incoming_message(message: dict) -> None:
         return
 
     public_file_url = f"{PUBLIC_BASE_URL}{url_for('media', filename=out_path.name)}"
-    sent = send_whatsapp_media(from_number, outbound_type, public_file_url, "Pronto")
+    sent = send_whatsapp_media(from_number, outbound_type, public_file_url)
     if not sent:
         send_whatsapp_text(from_number, f"Processado. Baixe aqui: {public_file_url}")
 
+
+_load_user_settings()
 
 
 if __name__ == "__main__":
