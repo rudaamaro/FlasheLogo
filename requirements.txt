@@ -1,0 +1,8 @@
+Flask>=3.0,<4
+gunicorn>=21.2,<24
+requests>=2.31,<3
+numpy>=1.24,<2
+Pillow>=10,<12
+moviepy==1.0.3
+imageio>=2.34,<3
+imageio-ffmpeg>=0.5,<1
