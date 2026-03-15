@@ -2,6 +2,7 @@ import os
 import json
 import re
 import uuid
+import socket
 import unicodedata
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -22,6 +23,7 @@ from moviepy.video.VideoClip import VideoClip as MPVideoClip
 
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "")
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v23.0")
+FORCE_IPV4 = (os.getenv("FORCE_IPV4", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
 WHATSAPP_TOKEN = (
     os.getenv("WHATSAPP_TOKEN")
     or os.getenv("META_TOKEN")
@@ -112,6 +114,20 @@ SIZE_ROWS = [
 app = Flask(__name__)
 SETTINGS_PATH = BASE_DIR / "user_presets.json"
 USER_SETTINGS: Dict[str, Dict[str, object]] = {}
+
+
+def _configure_network_stack() -> None:
+    # Alguns ambientes resolvem graph.facebook.com em IPv6 sem rota de saida.
+    # Se FORCE_IPV4=1, Requests/urllib3 passara a usar apenas IPv4.
+    if not FORCE_IPV4:
+        return
+    try:
+        import urllib3.util.connection as urllib3_cn
+
+        urllib3_cn.allowed_gai_family = lambda: socket.AF_INET
+        print("FORCE_IPV4 ativo: requisicoes HTTP usando IPv4.")
+    except Exception as e:
+        print(f"Nao foi possivel ativar FORCE_IPV4: {e}")
 
 
 def _default_user_settings() -> Dict[str, object]:
@@ -894,6 +910,7 @@ def handle_incoming_message(message: dict) -> None:
 
 
 _load_user_settings()
+_configure_network_stack()
 
 
 if __name__ == "__main__":
