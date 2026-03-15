@@ -19,6 +19,7 @@ from moviepy.video.VideoClip import VideoClip as MPVideoClip
 
 ACCOUNT_SID = os.getenv("ACCOUNT_SID")
 AUTH_TOKEN = os.getenv("AUTH_TOKEN")
+VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "")
 
 # Pasta onde vamos salvar mídias recebidas e processadas
 BASE_DIR = Path(__file__).parent
@@ -32,7 +33,10 @@ LOGO_PATH = BASE_DIR / "logo.png"
 
 # SEU DOMÍNIO DO NGROK (Atualizado conforme seu print)
 # IMPORTANTE: Se você reiniciar o ngrok, essa URL muda e você precisa atualizar aqui.
-PUBLIC_BASE_URL = "https://epidemiologically-odourless-casen.ngrok-free.dev"
+_railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN")
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL") or (
+    f"https://{_railway_domain}" if _railway_domain else ""
+)
 
 # Ajustes padrão da logo
 DEFAULT_POSITION = "Canto superior esquerdo"
@@ -210,6 +214,22 @@ def home():
     return "Servidor WhatsApp OK", 200
 
 
+@app.get("/webhook")
+def verify():
+    mode = request.args.get("hub.mode")
+    token = request.args.get("hub.verify_token")
+    challenge = request.args.get("hub.challenge")
+
+    if mode == "subscribe" and VERIFY_TOKEN and token == VERIFY_TOKEN:
+        return challenge or "", 200
+    return "error", 403
+
+
+@app.post("/webhook")
+def whatsapp_cloud_events():
+    return "EVENT_RECEIVED", 200
+
+
 @app.post("/whatsapp")
 def whatsapp_webhook():
     resp = MessagingResponse()
@@ -270,5 +290,5 @@ def whatsapp_webhook():
 
 
 if __name__ == "__main__":
-    # debug=True ajuda a ver erros no terminal se acontecerem
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    port = int(os.getenv("PORT", "5000"))
+    app.run(host="0.0.0.0", port=port, debug=False)
